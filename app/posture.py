@@ -13,5 +13,9 @@ def normalize_posture_content(content: Any) -> Any:
     except (TypeError, ValueError):
         return content
     normalized = dict(content)
+    if mcra <= 0 and not any(
+        key in normalized for key in ("valid", "detected", "landmarks_valid")
+    ):
+        normalized["valid"] = False
     normalized["neck_forward"] = mcra >= NECK_FORWARD_THRESHOLD
     return normalized

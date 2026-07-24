@@ -204,6 +204,17 @@ It keeps the fixed Mobius topology and uses:
 - `GET /deskInterface/lcdCommand/latest`
 - `POST /deskInterface/buttonEvents`
 
+Use these files as the canonical device firmware/runtime set:
+
+- Raspberry Pi posture camera: `raspberry_pi_codes/main.py`
+- Button/LCD UNO R4 WiFi: `arduino_codes/button_lcd/button_lcd.ino`
+- Posture light UNO R4 WiFi: `arduino_codes/led.copy_20260720/led.copy_20260720.ino`
+- Desk motor UNO R4 WiFi: `desk_motor_controller_uno_r4_wifi.ino`
+
+`raspberry_pi_codes/demo.py` is retained as a development/reference runner. It
+does not publish `postureLight/command`; lighting commands are owned by the
+analytics server so that only one component controls the light command stream.
+
 Default LCD:
 
 - line 1: `SYSTEM READY`
