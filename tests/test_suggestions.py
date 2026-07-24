@@ -221,6 +221,18 @@ def test_invalid_samples_are_excluded_from_recent_denominator():
     assert metrics["recent_60s_neck_forward_count"] == 3
 
 
+def test_zero_mcra_without_validity_flag_is_excluded():
+    events = [sample_event(0, False), sample_event(1, True)]
+    events[0]["content"].pop("valid")
+    events[0]["content"]["mCRA"] = 0
+
+    metrics = calculate_posture_metrics(events)
+
+    assert metrics["sample_count"] == 2
+    assert metrics["valid_sample_count"] == 1
+    assert metrics["forward_sample_ratio"] == 1.0
+
+
 def test_posture_metrics_do_not_mix_sessions_when_events_are_session_scoped():
     session_one = [sample_event(index * 2.5, True, session_id="s-1") for index in range(5)]
     session_two = [sample_event(index, False, session_id="s-2") for index in range(20)]
@@ -233,7 +245,7 @@ def test_posture_metrics_do_not_mix_sessions_when_events_are_session_scoped():
 
 
 @pytest.mark.asyncio
-async def test_stretch_warning_lcd_enables_stand_button(tmp_path: Path):
+async def test_stretch_warning_lcd_does_not_enable_stand_button(tmp_path: Path):
     store = SessionStore(tmp_path / "test.db", 86_400)
     await store.initialize()
     session = await store.create_session("device", {})
@@ -247,11 +259,11 @@ async def test_stretch_warning_lcd_enables_stand_button(tmp_path: Path):
     lcd = lcd_commands(mobius)[-1]
     assert lcd["posture_state"] == "STRETCH_WARNING"
     assert lcd["line1"] == "STRETCH NEEDED"
-    assert lcd["line2"] == "B: STAND UP"
-    assert lcd["accept_enabled"] is True
-    assert lcd["requires_response"] is True
+    assert lcd["line2"] == "PLEASE STRETCH"
+    assert lcd["accept_enabled"] is False
+    assert lcd["requires_response"] is False
     assert lcd["desk_position"] == "DOWN"
-    assert lcd["next_motor_action"] == "raise"
+    assert lcd["next_motor_action"] == "none"
 
 
 @pytest.mark.asyncio
@@ -294,7 +306,7 @@ async def test_down_normal_rejects_b_button(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_down_stretch_warning_creates_raise_command(tmp_path: Path):
+async def test_down_stretch_warning_rejects_b_button(tmp_path: Path):
     store = SessionStore(tmp_path / "test.db", 86_400)
     await store.initialize()
     session = await store.create_session("device", {})
@@ -307,13 +319,8 @@ async def test_down_stretch_warning_creates_raise_command(tmp_path: Path):
         {"session_id": session["id"], "button": "B", "event_id": "b-raise-warning"}
     )
 
-    assert command["direction"] == "up"
-    assert command["target_position"] == "UP"
-    assert command["target_height_cm"] == 125
-    assert engine._desk_positions[session["id"]] == "MOVING_UP"
-    moving_lcd = lcd_commands(mobius)[-1]
-    assert moving_lcd["desk_position"] == "MOVING_UP"
-    assert moving_lcd["accept_enabled"] is False
+    assert command is None
+    assert motor_commands(mobius) == []
 
 
 @pytest.mark.asyncio
@@ -342,7 +349,7 @@ async def test_moving_up_rejects_b_button(tmp_path: Path):
     session = await store.create_session("device", {})
     mobius = FakeMobius()
     engine = SuggestionEngine(Settings(), store, mobius)
-    engine._last_posture_state[session["id"]] = "STRETCH_WARNING"
+    engine._last_posture_state[session["id"]] = "TURTLE_NECK"
     engine._desk_positions[session["id"]] = "MOVING_UP"
 
     command = await engine.handle_button_event(
@@ -466,7 +473,7 @@ async def test_duplicate_b_event_is_ignored(tmp_path: Path):
     session = await store.create_session("device", {})
     mobius = FakeMobius()
     engine = SuggestionEngine(Settings(), store, mobius)
-    engine._last_posture_state[session["id"]] = "STRETCH_WARNING"
+    engine._last_posture_state[session["id"]] = "TURTLE_NECK"
 
     payload = {"session_id": session["id"], "button": "B", "event_id": "same-event"}
     first = await engine.handle_button_event(payload)
@@ -482,7 +489,7 @@ async def test_raise_then_lower_not_blocked_by_previous_suggestion(tmp_path: Pat
     store = SessionStore(tmp_path / "test.db", 86_400)
     await store.initialize()
     session = await store.create_session("device", {})
-    await add_samples(store, session["id"], 6, 3, 125)
+    await add_samples(store, session["id"], 26, 5, 130)
     mobius = FakeMobius()
     engine = SuggestionEngine(Settings(posture_min_samples=5), store, mobius)
     await engine.analyze(session["id"])
@@ -788,7 +795,7 @@ async def test_motor_command_failure_does_not_update_position(tmp_path: Path):
     session = await store.create_session("device", {})
     mobius = FailMotorMobius()
     engine = SuggestionEngine(Settings(), store, mobius)
-    engine._last_posture_state[session["id"]] = "STRETCH_WARNING"
+    engine._last_posture_state[session["id"]] = "TURTLE_NECK"
 
     with pytest.raises(MobiusError):
         await engine.handle_button_event(

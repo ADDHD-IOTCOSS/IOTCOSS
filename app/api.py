@@ -65,9 +65,37 @@ def _is_sessionless_device_status(source: str, content: Any) -> bool:
         return False
     return source in {
         "postureCamera/status",
+        "deskInterface/status",
         "deskMotor/status",
+        "deskMotor/motorEvents",
         "postureLight/status",
+        "postureLight/lightEvents",
     }
+
+
+async def _finalize_session(request: Request, session_id: str) -> dict[str, Any] | None:
+    """Close a session and persist the same final snapshot for every stop path."""
+    session = await request.app.state.store.close_session(session_id)
+    if not session:
+        return None
+
+    result, _ = await request.app.state.suggestion_engine.analyze(
+        session_id, deliver=False
+    )
+    await request.app.state.store.add_event(
+        session_id, "analysis", result.model_dump(), "ai"
+    )
+    for container, content in (
+        ("sessionSummaries", {**session, "analysis": result.model_dump()}),
+        ("currentSession", session),
+    ):
+        try:
+            await request.app.state.mobius.create_content_instance(
+                ANALYTICS_AE, container, content
+            )
+        except MobiusError:
+            pass
+    return session
 
 
 @router.get("/sessions", response_model=list[SessionView])
@@ -127,26 +155,9 @@ async def delete_session_record(session_id: str, request: Request):
 
 @router.delete("/sessions/{session_id}", response_model=SessionView)
 async def close_session(session_id: str, request: Request):
-    session = await request.app.state.store.close_session(session_id)
+    session = await _finalize_session(request, session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
-    result, _ = await request.app.state.suggestion_engine.analyze(
-        session_id, deliver=False
-    )
-    await request.app.state.store.add_event(
-        session_id, "analysis", result.model_dump(), "ai"
-    )
-    try:
-        await request.app.state.mobius.create_content_instance(
-            ANALYTICS_AE,
-            "sessionSummaries",
-            {**session, "analysis": result.model_dump()},
-        )
-        await request.app.state.mobius.create_content_instance(
-            ANALYTICS_AE, "currentSession", session
-        )
-    except MobiusError:
-        pass
     return session
 
 
@@ -291,7 +302,7 @@ async def receive_notification(request: Request, payload: dict[str, Any] = Body(
         if not previous_session:
             previous_session = await request.app.state.store.get_latest_active_session()
         if previous_session:
-            await request.app.state.store.close_session(previous_session["id"])
+            await _finalize_session(request, previous_session["id"])
             print(
                 "Closed previous active session before A/start: "
                 f"{previous_session['id']}"
@@ -323,15 +334,11 @@ async def receive_notification(request: Request, payload: dict[str, Any] = Body(
     if not session:
         session = await request.app.state.store.get_latest_active_session()
     if not session:
-        session = await request.app.state.store.create_session(
-            "mobius-device", {"origin": source}
-        )
-        try:
-            await request.app.state.mobius.create_content_instance(
-                ANALYTICS_AE, "currentSession", session
-            )
-        except MobiusError:
-            pass
+        # A session may only be opened explicitly (API or button A/start).
+        # Startup, heartbeat and delayed device notifications must never create
+        # a ghost session merely because no active session exists.
+        print(f"Ignoring notification without an active session: source={source}")
+        return {}
     if button_event and isinstance(content, dict):
         content = {**content, "session_id": session["id"]}
 
@@ -391,14 +398,8 @@ async def receive_notification(request: Request, payload: dict[str, Any] = Body(
         except MobiusError as exc:
             print(f"Button command delivery failed: {exc}")
         if stop_button_event:
-            closed_session = await request.app.state.store.close_session(session["id"])
+            closed_session = await _finalize_session(request, session["id"])
             if closed_session:
-                try:
-                    await request.app.state.mobius.create_content_instance(
-                        ANALYTICS_AE, "currentSession", closed_session
-                    )
-                except MobiusError:
-                    pass
                 await request.app.state.realtime.broadcast(
                     session["id"],
                     {"event": "session-closed", "data": closed_session},

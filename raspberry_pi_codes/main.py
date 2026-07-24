@@ -279,11 +279,15 @@ def extract_keypoints(output):
 
 
 def calculate_posture(points):
-    result = {"neck_forward": False, "mCRA": 0}
+    result = {"neck_forward": False, "mCRA": 0, "valid": False, "detected": False}
     try:
         eye = points["right_eye"]
         ear = points["right_ear"]
         shoulder = points["right_shoulder"]
+
+        result["detected"] = True
+        if any(point[2] <= 0.3 for point in (eye, ear, shoulder)):
+            return result
 
         v1 = np.array([eye[0] - ear[0], eye[1] - ear[1]], dtype=np.float32)
         v2 = np.array([shoulder[0] - ear[0], shoulder[1] - ear[1]], dtype=np.float32)
@@ -296,6 +300,7 @@ def calculate_posture(points):
         mcra = np.degrees(np.arccos(np.clip(cos_theta, -1.0, 1.0)))
         result["mCRA"] = round(float(mcra), 1)
         result["neck_forward"] = bool(mcra >= NECK_FORWARD_THRESHOLD)
+        result["valid"] = True
     except Exception as exc:
         print("Posture error:", exc)
     return result
@@ -348,7 +353,12 @@ def run_analysis(command, last_command_resource):
                 posture = calculate_posture(keypoints)
                 frame = draw_skeleton(frame, keypoints)
             else:
-                posture = {"neck_forward": False, "mCRA": 0}
+                posture = {
+                    "neck_forward": False,
+                    "mCRA": 0,
+                    "valid": False,
+                    "detected": False,
+                }
 
             cv2.putText(
                 frame,
@@ -389,11 +399,13 @@ def run_analysis(command, last_command_resource):
                         "measured_at": measured_at,
                         "neck_forward": posture["neck_forward"],
                         "mCRA": posture["mCRA"],
+                        "valid": posture["valid"],
+                        "detected": posture["detected"],
                     },
                 )
                 last_sample_upload = now
 
-            if (
+            if posture["valid"] and (
                 previous_neck_forward is not None
                 and posture["neck_forward"] != previous_neck_forward
             ):
@@ -412,7 +424,8 @@ def run_analysis(command, last_command_resource):
                         "mCRA": posture["mCRA"],
                     },
                 )
-            previous_neck_forward = posture["neck_forward"]
+            if posture["valid"]:
+                previous_neck_forward = posture["neck_forward"]
 
             if now - last_command_poll >= COMMAND_POLL_INTERVAL:
                 last_command_resource, next_command = poll_command(last_command_resource)

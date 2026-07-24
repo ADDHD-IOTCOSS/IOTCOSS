@@ -37,8 +37,6 @@ CONTAINERS = {
     "samples": "postureSamples",
     "events": "postureEvents",
 }
-POSTURE_LIGHT_AE = "postureLight"
-POSTURE_LIGHT_COMMAND_CONTAINER = "command"
 # =========================
 # Mobius CSE
 # =========================
@@ -221,7 +219,9 @@ def calculate_posture(points):
 
     result = {
         "neck_forward": False,
-        "mCRA": 0
+        "mCRA": 0,
+        "valid": False,
+        "detected": False,
     }
 
     try:
@@ -229,6 +229,9 @@ def calculate_posture(points):
         eye = points["right_eye"]
         ear = points["right_ear"]
         shoulder = points["right_shoulder"]
+        result["detected"] = True
+        if any(point[2] <= 0.3 for point in (eye, ear, shoulder)):
+            return result
 
         print("--------------------------------")
         print(f"Eye      : {eye}")
@@ -274,6 +277,7 @@ def calculate_posture(points):
         # 120도 기준 판단
         # Confirmed rule: mCRA >= 120 degrees means forward-head posture.
         result["neck_forward"] = bool(mcra >= NECK_FORWARD_THRESHOLD)
+        result["valid"] = True
 
 
     except Exception as e:
@@ -403,24 +407,6 @@ def send_command(ae_name, container, data):
     except requests.RequestException as exc:
         print(f"[MOBIUS] command {ae_name}/{container} failed: {exc}")
         return False
-
-
-def send_posture_light_command(session_id, posture, command=None):
-    """Send a posture state command using the fixed postureLight topology."""
-    if command is None:
-        command = "WARNING" if posture["neck_forward"] else "NORMAL"
-    return send_command(
-        POSTURE_LIGHT_AE,
-        POSTURE_LIGHT_COMMAND_CONTAINER,
-        {
-            "command": command,
-            "session_id": session_id,
-            "device_id": DEVICE_ID,
-            "neck_forward": posture["neck_forward"],
-            "mCRA": posture["mCRA"],
-            "issued_at": datetime.now().isoformat(),
-        },
-    )
 
 
 def poll_command(last_resource_name=None):
@@ -600,7 +586,9 @@ def run_posture_analysis(command, last_command_resource, processed_commands):
             else:
                 posture = {
                     "neck_forward": False,
-                    "mCRA": 0
+                    "mCRA": 0,
+                    "valid": False,
+                    "detected": False,
                 }
 
             cv2.putText(
@@ -639,6 +627,8 @@ def run_posture_analysis(command, last_command_resource, processed_commands):
                         "measured_at": measured_at,
                         "neck_forward": posture["neck_forward"],
                         "mCRA": posture["mCRA"],
+                        "valid": posture["valid"],
+                        "detected": posture["detected"],
                     },
                 )
                 if sample_sent:
@@ -658,12 +648,11 @@ def run_posture_analysis(command, last_command_resource, processed_commands):
                 last_sample_upload = now
 
             # ?먯꽭 ?곹깭媛 諛붾??쒓컙留?event 而⑦뀒?대꼫??湲곕줉?쒕떎.
-            posture_changed = (
+            posture_changed = posture["valid"] and (
                 previous_neck_forward is None
                 or posture["neck_forward"] != previous_neck_forward
             )
             if posture_changed:
-                send_posture_light_command(session_id, posture)
                 if previous_neck_forward is not None:
                     event_name = (
                         "neck_forward_detected"
@@ -683,7 +672,8 @@ def run_posture_analysis(command, last_command_resource, processed_commands):
                     )
                     if event_sent:
                         print(f"Posture event sent: session_id={session_id}, event={event_name}")
-            previous_neck_forward = posture["neck_forward"]
+            if posture["valid"]:
+                previous_neck_forward = posture["neck_forward"]
 
             if now - last_command_poll >= COMMAND_POLL_INTERVAL:
                 last_command_resource, next_command = poll_command(last_command_resource)
@@ -724,11 +714,6 @@ def run_posture_analysis(command, last_command_resource, processed_commands):
                 "state": "offline",
                 "stopped_at": datetime.now().isoformat(),
             },
-        )
-        send_posture_light_command(
-            session_id,
-            {"neck_forward": False, "mCRA": 0},
-            command="OFF",
         )
         if process:
             process.terminate()

@@ -432,10 +432,12 @@ def test_stop_button_closes_session_when_command_delivery_fails(
     from app.mobius import MobiusError
 
     app = create_app()
+    calls = []
 
     async def create_content_instance(ae_name, container, content):
         if ae_name == "postureCamera" and container == "command":
             raise MobiusError("camera command failed")
+        calls.append((ae_name, container, content))
         return "cin-1"
 
     app.state.mobius.create_content_instance = create_content_instance
@@ -470,6 +472,54 @@ def test_stop_button_closes_session_when_command_delivery_fails(
     assert response.status_code == 200
     assert stopped["status"] == "closed"
     assert any(event["source"] == "deskInterface/buttonEvents" for event in events)
+    assert any(
+        ae == "analyticsServer" and container == "sessionSummaries"
+        for ae, container, _ in calls
+    )
+    assert any(
+        ae == "analyticsServer"
+        and container == "currentSession"
+        and content["status"] == "closed"
+        for ae, container, content in calls
+    )
+
+
+def test_sessionless_motor_startup_does_not_create_session(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("DATABASE_PATH", str(tmp_path / "test.db"))
+    monkeypatch.setenv("MOBIUS_AUTO_REGISTER", "false")
+    get_settings.cache_clear()
+    from app.main import create_app
+
+    app = create_app()
+
+    async def create_content_instance(*args):
+        return "cin-1"
+
+    app.state.mobius.create_content_instance = create_content_instance
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/mobius/notifications",
+            json={
+                "m2m:sgn": {
+                    "sur": "/Mobius/deskMotor/motorEvents/subToAnalyticsServer",
+                    "nev": {
+                        "rep": {
+                            "m2m:cin": {
+                                "rn": "motor-startup",
+                                "con": {
+                                    "device_id": "desk-motor-01",
+                                    "event": "startup",
+                                },
+                            }
+                        }
+                    },
+                }
+            },
+        )
+        sessions = client.get("/api/v1/sessions").json()
+
+    assert response.status_code == 200
+    assert sessions == []
 
 
 def test_mcra_overrides_inverted_neck_forward_flag(tmp_path: Path, monkeypatch):

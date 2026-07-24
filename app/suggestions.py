@@ -20,7 +20,9 @@ LIGHT_COMMANDS: dict[str, dict[str, int]] = {
     "DESK_UP": {"red": 0, "green": 255, "blue": 0, "transition_ms": 1000},
 }
 
-RAISE_POSTURE_STATES = {"STRETCH_WARNING", "TURTLE_NECK"}
+# A short posture-correction warning is informational only. Desk movement is
+# offered after the prolonged DESK_HEIGHT_CHANGE/TURTLE_NECK threshold.
+RAISE_POSTURE_STATES = {"TURTLE_NECK"}
 
 
 def _parse_time(value: Any) -> datetime | None:
@@ -68,6 +70,8 @@ def calculate_posture_metrics(events: list[dict[str, Any]]) -> dict[str, Any]:
             mcra = float(content.get("mCRA"))
         except (TypeError, ValueError):
             mcra = None
+        if mcra is not None and mcra <= 0:
+            continue
         samples.append((measured_at, mcra, neck_forward))
 
     samples.sort(key=lambda item: item[0])
